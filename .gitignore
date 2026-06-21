@@ -1,0 +1,21 @@
+# ── SECRETS — never commit (these hold the Supabase service-role key) ──────────
+pipeline.py
+admin_server.py
+.env
+.env.local
+secrets*.py
+config_local.py
+
+# ── Local admin tool (depends on admin_server.py, which is git-ignored) ────────
+admin.html
+
+# ── Pipeline byproducts ───────────────────────────────────────────────────────
+needs_review*.jsonl
+
+# ── Local / editor / OS junk ──────────────────────────────────────────────────
+.DS_Store
+.claude/
+claude-setup-main/
+screenshots/
+__pycache__/
+*.pyc

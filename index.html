@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClassicScroll</title>
+
+  <!-- Tailwind CSS via CDN — no build step required -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Supabase JS v2 via CDN (UMD build exposes window.supabase) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
+  <style>
+    /*
+     * Snap-scroll feed: each card occupies the full viewport.
+     * The user scrolls (or swipes on mobile) to advance to the next excerpt.
+     * 100svh = "small viewport height" — avoids being obscured by mobile browser chrome.
+     */
+    #feed-container {
+      scroll-snap-type: y mandatory;
+      overflow-y: scroll;
+      height: 100svh;          /* fallback: 100vh handled by Tailwind class */
+    }
+    .excerpt-card {
+      scroll-snap-align: start;
+      scroll-snap-stop: always; /* prevent swiping past multiple cards at once */
+      height: 100svh;
+    }
+    /* Hide scrollbar for cleaner look while preserving functionality */
+    #feed-container { scrollbar-width: none; -ms-overflow-style: none; }
+    #feed-container::-webkit-scrollbar { display: none; }
+
+    /* Inner body area scrolls independently so long excerpts can be read in full */
+    .excerpt-body-scroll {
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #404040 transparent;
+    }
+    .excerpt-body-scroll::-webkit-scrollbar { width: 4px; }
+    .excerpt-body-scroll::-webkit-scrollbar-thumb { background: #404040; border-radius: 2px; }
+  </style>
+</head>
+
+<body class="bg-neutral-950 text-neutral-100 h-full" style="font-family: Georgia, 'Times New Roman', serif;">
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- SCREEN: Auth (Login / Sign Up)                                        -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="screen-auth"
+    class="fixed inset-0 flex items-center justify-center p-6 z-20 bg-neutral-950">
+    <div class="w-full max-w-sm">
+
+      <div class="text-center mb-10">
+        <h1 class="text-4xl font-bold tracking-tight mb-2">ClassicScroll</h1>
+        <p class="text-neutral-400 text-sm">Classic literature, one scroll at a time.</p>
+      </div>
+
+      <!-- Login / Sign Up tab switcher -->
+      <div class="flex gap-1 mb-6 bg-neutral-900 rounded-xl p-1">
+        <button id="tab-login" onclick="switchTab('login')"
+          class="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all bg-neutral-700 text-white">
+          Login
+        </button>
+        <button id="tab-signup" onclick="switchTab('signup')"
+          class="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all text-neutral-400 hover:text-white">
+          Sign Up
+        </button>
+      </div>
+
+      <form id="auth-form" onsubmit="handleAuth(event)" class="flex flex-col gap-3">
+        <input id="email-input" type="email" placeholder="Email address" required
+          class="bg-neutral-900 border border-neutral-700 rounded-xl px-4 py-3 text-sm
+                 outline-none focus:border-amber-500 transition-colors placeholder:text-neutral-500"
+          style="font-family: system-ui, sans-serif;" />
+        <input id="password-input" type="password" placeholder="Password" required
+          class="bg-neutral-900 border border-neutral-700 rounded-xl px-4 py-3 text-sm
+                 outline-none focus:border-amber-500 transition-colors placeholder:text-neutral-500"
+          style="font-family: system-ui, sans-serif;" />
+        <button type="submit" id="auth-submit"
+          class="bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-neutral-950
+                 font-semibold rounded-xl py-3 text-sm transition-colors mt-1"
+          style="font-family: system-ui, sans-serif;">
+          Login
+        </button>
+        <p id="auth-error" class="text-red-400 text-xs text-center hidden"
+          style="font-family: system-ui, sans-serif;"></p>
+      </form>
+
+    </div>
+  </div>
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- SCREEN: Onboarding (Choose Vibes)                                     -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="screen-onboarding"
+    class="hidden fixed inset-0 flex flex-col overflow-y-auto z-20 bg-neutral-950">
+    <div class="max-w-md mx-auto w-full px-6 py-14">
+
+      <h2 class="text-2xl font-bold mb-2">What moves you?</h2>
+      <p class="text-neutral-400 text-sm mb-8" style="font-family: system-ui, sans-serif;">
+        Choose at least 2 vibes to personalize your feed.
+      </p>
+
+      <!--
+        Tag grid is rendered from TAXONOMY (the same constant as pipeline.py).
+        Display labels are derived from the canonical kebab-case values —
+        we never store the display label, only the canonical string.
+      -->
+      <div id="vibe-grid" class="flex flex-wrap gap-2 mb-10"></div>
+
+      <button id="onboard-submit" onclick="saveOnboarding()" disabled
+        class="w-full bg-amber-500 hover:bg-amber-400 active:bg-amber-600
+               disabled:bg-neutral-800 disabled:text-neutral-600 disabled:cursor-not-allowed
+               text-neutral-950 font-semibold rounded-xl py-3 text-sm transition-colors"
+        style="font-family: system-ui, sans-serif;">
+        Start Reading
+      </button>
+
+    </div>
+  </div>
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- SCREEN: Feed                                                           -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="screen-feed" class="hidden fixed inset-0 flex flex-col z-10">
+
+    <!-- Top bar -->
+    <div class="flex items-center justify-between px-5 py-3 border-b border-neutral-800
+                bg-neutral-950/80 backdrop-blur-sm z-10 flex-shrink-0">
+      <span class="font-bold text-lg tracking-tight">ClassicScroll</span>
+      <button onclick="handleSignOut()"
+        class="text-neutral-400 hover:text-white text-sm transition-colors"
+        style="font-family: system-ui, sans-serif;">
+        Sign out
+      </button>
+    </div>
+
+    <!-- Snap-scroll excerpt container -->
+    <div id="feed-container" class="flex-1">
+      <!-- Excerpt cards are injected here by renderFeed() -->
+    </div>
+
+    <!-- Empty-state overlay (shown when no excerpts are available) -->
+    <div id="feed-empty"
+      class="hidden absolute inset-0 flex items-center justify-center text-neutral-500">
+      <div class="text-center px-8">
+        <p class="text-5xl mb-4" style="font-family: system-ui;">&#128218;</p>
+        <p class="font-medium mb-1">You've read everything.</p>
+        <p class="text-sm text-neutral-600" style="font-family: system-ui, sans-serif;">
+          New excerpts are added when someone runs the pipeline.<br>Check back soon.
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- OVERLAY: Comments sheet (slides up from bottom)                       -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="comment-overlay" class="hidden fixed inset-0 z-30 flex flex-col justify-end">
+
+    <!-- Tap backdrop to close -->
+    <div class="absolute inset-0 bg-black/60" onclick="closeComments()"></div>
+
+    <div class="relative bg-neutral-900 rounded-t-2xl max-h-[72vh] flex flex-col
+                border-t border-neutral-800">
+
+      <!-- Sheet header -->
+      <div class="flex items-center justify-between px-5 py-4 border-b border-neutral-800
+                  flex-shrink-0">
+        <h3 class="font-semibold text-base">Comments</h3>
+        <button onclick="closeComments()"
+          class="text-neutral-400 hover:text-white text-2xl leading-none transition-colors"
+          style="font-family: system-ui;">&times;</button>
+      </div>
+
+      <!-- Comment list (scrollable) -->
+      <div id="comments-list"
+        class="flex-1 overflow-y-auto px-5 py-4 space-y-5 text-sm min-h-0"></div>
+
+      <!-- New comment input -->
+      <div class="px-4 pb-5 pt-3 border-t border-neutral-800 flex gap-2 flex-shrink-0">
+        <input id="comment-input" type="text" placeholder="Add a comment…" maxlength="1000"
+          class="flex-1 bg-neutral-800 border border-neutral-700 rounded-xl px-3 py-2.5 text-sm
+                 outline-none focus:border-amber-500 transition-colors placeholder:text-neutral-500"
+          style="font-family: system-ui, sans-serif;"
+          onkeydown="if(event.key==='Enter') submitComment()" />
+        <button onclick="submitComment()"
+          class="bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-neutral-950
+                 font-semibold rounded-xl px-4 py-2.5 text-sm transition-colors flex-shrink-0"
+          style="font-family: system-ui, sans-serif;">
+          Post
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MAIN SCRIPT                                                            -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <script>
+    'use strict';
+
+    // ── SUPABASE CONFIG ───────────────────────────────────────────────────────
+    // Replace both values with your project's values from:
+    //   Supabase dashboard → Settings → API
+    //
+    // Use ONLY the anon/public key here.
+    // NEVER put the service-role key in this file or any client-side code.
+    const SUPABASE_URL      = "https://knogncwnrahpftoahwgq.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_Mn5c5PjyYwMe-tKtBc91_A_v4ol5lFx";
+
+    // ── CANONICAL TAXONOMY ────────────────────────────────────────────────────
+    // Must be byte-for-byte identical to:
+    //   • pipeline.py  → TAXONOMY list and VibeTag Literal type
+    //   • schema.sql   → is_valid_vibe_tags() array
+    //
+    // These are the canonical stored values (lowercase kebab-case).
+    // Display labels are derived at render time via toLabel() — never stored.
+    const TAXONOMY = [
+      "gothic",
+      "romance",
+      "philosophy",
+      "adventure",
+      "tragedy",
+      "satire",
+      "horror",
+      "mystery",
+      "war",
+      "coming-of-age",
+      "family-drama",
+      "social-commentary",
+      "humor",
+      "psychological",
+      "revenge",
+      "redemption",
+      "nature",
+      "class-conflict",
+      "existential",
+      "supernatural",
+    ];
+
+    // Convert a canonical kebab-case tag to a human-readable display label.
+    // e.g. "coming-of-age" → "Coming of Age"
+    const toLabel = tag =>
+      tag.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
+    // ── SUPABASE CLIENT ───────────────────────────────────────────────────────
+    // Explicit persistence so the session survives reloads AND full browser
+    // restarts: the token is stored in localStorage under a stable key and is
+    // auto-refreshed in the background. This is what keeps you "logged in".
+    if (typeof supabase === "undefined") {
+      document.body.innerHTML =
+        '<p style="color:#f87171;font-family:system-ui;padding:2rem">' +
+        'Failed to load the Supabase library (check your internet connection), ' +
+        'then reload.</p>';
+      throw new Error("supabase-js CDN failed to load");
+    }
+    const { createClient } = supabase;
+    const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        storage: window.localStorage,
+        storageKey: "classicscroll-auth",
+      },
+    });
+
+    // ── APP STATE ─────────────────────────────────────────────────────────────
+    let currentUser        = null;   // Supabase User object (null when signed out)
+    let activeTab          = "login";
+    let selectedVibes      = new Set();  // canonical tag strings chosen during onboarding
+    let currentExcerptId   = null;       // excerpt open in the comment overlay
+    let cardViewTimers     = {};         // { excerptId: { startMs, reported } }
+
+    // ── SCREEN ROUTER ─────────────────────────────────────────────────────────
+    function showScreen(id) {
+      ["screen-auth", "screen-onboarding", "screen-feed"].forEach(sid => {
+        document.getElementById(sid).classList.add("hidden");
+      });
+      document.getElementById(id).classList.remove("hidden");
+    }
+
+    // ── AUTH ──────────────────────────────────────────────────────────────────
+    function switchTab(tab) {
+      activeTab = tab;
+      const isLogin = tab === "login";
+
+      document.getElementById("auth-submit").textContent = isLogin ? "Login" : "Sign Up";
+
+      const loginBtn  = document.getElementById("tab-login");
+      const signupBtn = document.getElementById("tab-signup");
+
+      loginBtn.className  = loginBtn.className.replace(/bg-neutral-700|text-neutral-400|text-white/g, "").trim();
+      signupBtn.className = signupBtn.className.replace(/bg-neutral-700|text-neutral-400|text-white/g, "").trim();
+
+      if (isLogin) {
+        loginBtn.classList.add("bg-neutral-700", "text-white");
+        signupBtn.classList.add("text-neutral-400");
+      } else {
+        signupBtn.classList.add("bg-neutral-700", "text-white");
+        loginBtn.classList.add("text-neutral-400");
+      }
+    }
+
+    async function handleAuth(e) {
+      e.preventDefault();
+      const email    = document.getElementById("email-input").value.trim();
+      const password = document.getElementById("password-input").value;
+      const errEl    = document.getElementById("auth-error");
+      const submitBtn = document.getElementById("auth-submit");
+
+      errEl.classList.add("hidden");
+
+      if (!email || !password) {
+        errEl.textContent = "Enter both an email and a password.";
+        errEl.classList.remove("hidden");
+        return;
+      }
+
+      // Visible loading state so the button always "does something".
+      const originalLabel = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = activeTab === "login" ? "Signing in…" : "Creating…";
+
+      try {
+        const result = activeTab === "login"
+          ? await db.auth.signInWithPassword({ email, password })
+          : await db.auth.signUp({ email, password });
+
+        if (result.error) {
+          errEl.textContent = result.error.message;
+          errEl.classList.remove("hidden");
+          return;
+        }
+
+        // Signup with email confirmation ON returns a user but NO session, so
+        // routing never happens — tell the user instead of doing nothing.
+        if (activeTab === "signup" && !result.data.session) {
+          errEl.textContent =
+            "Account created — check your email to confirm, then log in. " +
+            "(Or disable email confirmation in Supabase Auth settings.)";
+          errEl.classList.remove("hidden");
+          return;
+        }
+
+        // Deterministic routing: don't rely solely on onAuthStateChange firing —
+        // route right now using the session we just received.
+        await routeForSession(result.data.session);
+      } catch (err) {
+        errEl.textContent = "Something went wrong: " + (err?.message || err);
+        errEl.classList.remove("hidden");
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalLabel;
+      }
+    }
+
+    async function handleSignOut() {
+      try {
+        await db.auth.signOut();
+      } finally {
+        currentUser = null;
+        showScreen("screen-auth");
+      }
+    }
+
+    // ── ONBOARDING ────────────────────────────────────────────────────────────
+    function renderVibeGrid() {
+      const grid = document.getElementById("vibe-grid");
+      grid.innerHTML = "";
+      selectedVibes.clear();
+      document.getElementById("onboard-submit").disabled = true;
+
+      TAXONOMY.forEach(tag => {
+        const btn = document.createElement("button");
+        btn.type        = "button";
+        btn.dataset.tag = tag;
+        btn.textContent = toLabel(tag);
+        btn.style.fontFamily = "system-ui, sans-serif";
+        btn.className = [
+          "px-3 py-1.5 rounded-full text-sm font-medium border transition-all",
+          "border-neutral-700 text-neutral-400 hover:border-amber-500 hover:text-amber-300",
+        ].join(" ");
+        btn.onclick = () => toggleVibe(tag, btn);
+        grid.appendChild(btn);
+      });
+    }
+
+    function toggleVibe(tag, btn) {
+      if (selectedVibes.has(tag)) {
+        selectedVibes.delete(tag);
+        btn.className = [
+          "px-3 py-1.5 rounded-full text-sm font-medium border transition-all",
+          "border-neutral-700 text-neutral-400 hover:border-amber-500 hover:text-amber-300",
+        ].join(" ");
+      } else {
+        selectedVibes.add(tag);
+        btn.className = [
+          "px-3 py-1.5 rounded-full text-sm font-medium border transition-all",
+          "border-amber-500 bg-amber-500/15 text-amber-400",
+        ].join(" ");
+      }
+      document.getElementById("onboard-submit").disabled = selectedVibes.size < 2;
+    }
+
+    async function saveOnboarding() {
+      const tags = [...selectedVibes];  // canonical kebab-case strings, same as DB constraint
+
+      const { error } = await db
+        .from("profiles")
+        .upsert({ id: currentUser.id, favorite_tags: tags });
+
+      if (error) {
+        alert("Could not save your preferences: " + error.message);
+        return;
+      }
+
+      await loadFeed();
+      showScreen("screen-feed");
+    }
+
+    // ── FEED ──────────────────────────────────────────────────────────────────
+    async function loadFeed() {
+      const container = document.getElementById("feed-container");
+      container.innerHTML = "";
+      cardViewTimers = {};
+
+      // Call the Postgres function — ranking and exclusion logic lives in the DB
+      const { data, error } = await db.rpc("get_feed_for_user", { p_limit: 20 });
+
+      if (error) {
+        console.error("Feed RPC error:", error);
+        document.getElementById("feed-empty").classList.remove("hidden");
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        document.getElementById("feed-empty").classList.remove("hidden");
+        return;
+      }
+
+      document.getElementById("feed-empty").classList.add("hidden");
+      data.forEach(excerpt => container.appendChild(buildCard(excerpt)));
+
+      // Wire up IntersectionObserver for view-duration tracking after DOM is ready
+      requestAnimationFrame(setupViewTracking);
+    }
+
+    // ── CARD BUILDER ──────────────────────────────────────────────────────────
+    function buildCard(excerpt) {
+      const card = document.createElement("div");
+      card.className       = "excerpt-card flex flex-col border-b border-neutral-800";
+      card.dataset.excerptId = excerpt.id;
+
+      // Vibe tags (display only; descriptor_tags are not shown — they are never
+      // used for ranking and are intended as internal pipeline metadata)
+      const tagHtml = (excerpt.vibe_tags || [])
+        .slice(0, 5)
+        .map(t =>
+          `<span class="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10
+                        text-amber-400 border border-amber-500/25"
+                style="font-family: system-ui, sans-serif;">${escHtml(toLabel(t))}</span>`
+        )
+        .join("");
+
+      card.innerHTML = `
+        <!-- ── Card header: book info + vibe tags ── -->
+        <div class="px-5 pt-5 pb-3 flex-shrink-0 border-b border-neutral-800/60">
+          <p class="text-xs text-neutral-500 uppercase tracking-widest mb-0.5"
+             style="font-family: system-ui, sans-serif;">${escHtml(excerpt.author)}</p>
+          <h2 class="font-bold text-lg leading-snug mb-3">${escHtml(excerpt.book_title)}</h2>
+          <div class="flex flex-wrap gap-1.5">${tagHtml}</div>
+        </div>
+
+        <!-- ── Excerpt body (scrollable within the card) ── -->
+        <div class="excerpt-body-scroll flex-1 px-5 py-5 min-h-0">
+          <p class="text-neutral-200 leading-[1.85] text-base whitespace-pre-line">
+            ${escHtml(excerpt.body)}
+          </p>
+        </div>
+
+        <!-- ── Action bar: Like / Save / Comment ── -->
+        <div class="flex items-center gap-5 px-5 py-4 border-t border-neutral-800 flex-shrink-0
+                    bg-neutral-950/70 backdrop-blur-sm">
+
+          <button data-like-btn="${escHtml(excerpt.id)}"
+            onclick="logInteraction('${escHtml(excerpt.id)}', 'like', this)"
+            class="flex items-center gap-1.5 text-sm text-neutral-400
+                   hover:text-red-400 active:text-red-500 transition-colors"
+            style="font-family: system-ui, sans-serif;">
+            <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.75">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5
+                   4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
+            </svg>
+            <span>Like</span>
+          </button>
+
+          <button data-bookmark-btn="${escHtml(excerpt.id)}"
+            onclick="logInteraction('${escHtml(excerpt.id)}', 'bookmark', this)"
+            class="flex items-center gap-1.5 text-sm text-neutral-400
+                   hover:text-amber-400 active:text-amber-500 transition-colors"
+            style="font-family: system-ui, sans-serif;">
+            <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.75">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
+            </svg>
+            <span>Save</span>
+          </button>
+
+          <button onclick="openComments('${escHtml(excerpt.id)}')"
+            class="flex items-center gap-1.5 text-sm text-neutral-400
+                   hover:text-blue-400 active:text-blue-500 transition-colors ml-auto"
+            style="font-family: system-ui, sans-serif;">
+            <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.75">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03
+                   8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512
+                   15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+            </svg>
+            <span>Comment</span>
+          </button>
+
+        </div>
+      `;
+
+      return card;
+    }
+
+    // ── VIEW-DURATION TRACKING ────────────────────────────────────────────────
+    // Uses IntersectionObserver to detect when a card is substantially visible.
+    // When the card scrolls off, the elapsed time is logged as a 'view' interaction.
+    // This gives the pipeline useful engagement signal alongside likes/bookmarks.
+    function setupViewTracking() {
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          const id = entry.target.dataset.excerptId;
+          if (!id) return;
+
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.7) {
+            // Card is mostly on screen — start (or resume) the timer
+            if (!cardViewTimers[id]) {
+              cardViewTimers[id] = { startMs: Date.now(), reported: false };
+            }
+          } else if (!entry.isIntersecting) {
+            // Card left the viewport — log view duration if not yet reported
+            const timer = cardViewTimers[id];
+            if (timer && !timer.reported) {
+              const durationMs = Date.now() - timer.startMs;
+              timer.reported = true;
+              logView(id, durationMs);
+            }
+          }
+        });
+      }, { threshold: 0.7 });
+
+      document.querySelectorAll(".excerpt-card").forEach(card => observer.observe(card));
+    }
+
+    // Flush any un-reported view timers when the user navigates away
+    window.addEventListener("beforeunload", () => {
+      Object.entries(cardViewTimers).forEach(([id, timer]) => {
+        if (!timer.reported) {
+          const durationMs = Date.now() - timer.startMs;
+          timer.reported = true;
+          logView(id, durationMs);
+        }
+      });
+    });
+
+    async function logView(excerptId, durationMs) {
+      await db.from("interactions").upsert(
+        {
+          user_id:          currentUser.id,
+          excerpt_id:       excerptId,
+          action:           "view",
+          view_duration_ms: Math.round(durationMs),
+        },
+        { onConflict: "user_id,excerpt_id,action" }  // idempotent: update duration on revisit
+      );
+    }
+
+    // ── INTERACTION BUTTONS (Like / Save) ─────────────────────────────────────
+    async function logInteraction(excerptId, action, btn) {
+      btn.disabled = true;  // optimistic disable to prevent double-tap
+
+      const { error } = await db.from("interactions").upsert(
+        { user_id: currentUser.id, excerpt_id: excerptId, action },
+        { onConflict: "user_id,excerpt_id,action" }
+      );
+
+      if (error) {
+        console.error("Interaction error:", error);
+        btn.disabled = false;
+        return;
+      }
+
+      // Visual confirmation
+      const span = btn.querySelector("span");
+      if (action === "like") {
+        btn.classList.add("text-red-400");
+        if (span) span.textContent = "Liked";
+      } else if (action === "bookmark") {
+        btn.classList.add("text-amber-400");
+        if (span) span.textContent = "Saved";
+      }
+    }
+
+    // ── COMMENTS ─────────────────────────────────────────────────────────────
+    async function openComments(excerptId) {
+      currentExcerptId = excerptId;
+      document.getElementById("comment-overlay").classList.remove("hidden");
+      await loadComments(excerptId);
+    }
+
+    function closeComments() {
+      document.getElementById("comment-overlay").classList.add("hidden");
+      document.getElementById("comment-input").value = "";
+      currentExcerptId = null;
+    }
+
+    async function loadComments(excerptId) {
+      const list = document.getElementById("comments-list");
+      list.innerHTML = `<p class="text-neutral-500 text-xs text-center py-2"
+                           style="font-family:system-ui,sans-serif;">Loading…</p>`;
+
+      const { data, error } = await db
+        .from("comments")
+        .select("id, body, created_at, user_id")
+        .eq("excerpt_id", excerptId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        list.innerHTML = `<p class="text-red-400 text-xs"
+                             style="font-family:system-ui,sans-serif;">Could not load comments.</p>`;
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        list.innerHTML = `<p class="text-neutral-500 text-xs text-center py-6"
+                             style="font-family:system-ui,sans-serif;">
+                            No comments yet. Be the first!
+                          </p>`;
+        return;
+      }
+
+      list.innerHTML = data.map(c => `
+        <div>
+          <p class="text-neutral-500 text-xs mb-1" style="font-family:system-ui,sans-serif;">
+            ${c.user_id === currentUser.id ? "You" : "Reader"}
+            &middot;
+            ${relativeTime(c.created_at)}
+          </p>
+          <p class="text-neutral-100 text-sm leading-relaxed">${escHtml(c.body)}</p>
+        </div>
+      `).join(`<div class="border-t border-neutral-800"></div>`);
+    }
+
+    async function submitComment() {
+      const input = document.getElementById("comment-input");
+      const body  = input.value.trim();
+      if (!body || !currentExcerptId) return;
+
+      input.disabled = true;
+
+      const { error } = await db.from("comments").insert({
+        user_id:    currentUser.id,
+        excerpt_id: currentExcerptId,
+        body,
+      });
+
+      input.disabled = false;
+
+      if (error) {
+        alert("Could not post comment: " + error.message);
+        return;
+      }
+
+      input.value = "";
+      await loadComments(currentExcerptId);
+    }
+
+    // ── UTILITIES ─────────────────────────────────────────────────────────────
+    function escHtml(str) {
+      if (str == null) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function relativeTime(isoString) {
+      const diff = Date.now() - new Date(isoString).getTime();
+      const m = Math.floor(diff / 60000);
+      if (m < 1)  return "just now";
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return `${Math.floor(h / 24)}d ago`;
+    }
+
+    // ── ROUTING ───────────────────────────────────────────────────────────────
+    // Single source of truth for "given a session, what screen should show?".
+    // Called on initial page load, after login, and on every auth transition.
+    let routing = false;
+    async function routeForSession(session) {
+      if (routing) return;          // guard against overlapping calls
+      routing = true;
+      try {
+        currentUser = session?.user ?? null;
+
+        if (!currentUser) {
+          showScreen("screen-auth");
+          return;
+        }
+
+        // Has the user completed onboarding (>= 2 favorite tags)?
+        // maybeSingle() returns null (not an error) when the row is missing,
+        // so a not-yet-created profile routes to onboarding instead of dead-ending.
+        let favorite_tags = [];
+        try {
+          const { data: profile } = await db
+            .from("profiles")
+            .select("favorite_tags")
+            .eq("id", currentUser.id)
+            .maybeSingle();
+          favorite_tags = profile?.favorite_tags ?? [];
+        } catch (_) { /* treat as no profile → onboarding */ }
+
+        if (favorite_tags.length >= 2) {
+          await loadFeed();
+          showScreen("screen-feed");
+        } else {
+          renderVibeGrid();
+          showScreen("screen-onboarding");
+        }
+      } finally {
+        routing = false;
+      }
+    }
+
+    // ── BOOTSTRAP ─────────────────────────────────────────────────────────────
+    async function init() {
+      // 1. Restore any persisted session immediately so a returning user lands
+      //    straight on their feed (this is the "keep me logged in" behaviour).
+      const { data: { session } } = await db.auth.getSession();
+      await routeForSession(session);
+
+      // 2. React to later transitions (sign in/out, token refresh in other tabs).
+      db.auth.onAuthStateChange((_event, session) => {
+        routeForSession(session);
+      });
+    }
+
+    init();
+  </script>
+
+</body>
+</html>
