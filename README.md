@@ -4,7 +4,7 @@ A TikTok-style feed for excerpts from classic, public-domain literature.
 Swipe through hand-picked passages from books like *Frankenstein* and
 *The Picture of Dorian Gray*, tuned to the "vibes" you pick.
 
-**Live site:** _(GitHub Pages URL goes here once deployed)_
+**Live site:** https://spicepasta.github.io/stealth-startup/
 
 ## Stack
 - **Frontend:** a single static `index.html` (Tailwind + Supabase JS via CDN — no build step).
